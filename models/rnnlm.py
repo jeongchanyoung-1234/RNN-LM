@@ -4,12 +4,13 @@ from ..module.layers import *
 
 
 class RNNLM :
-    def __init__(self, vocab_size, word_vec_size, hidden_size, length) :
+    def __init__(self, vocab_size, word_vec_size, hidden_size, length, rnn='rnn') :
         W_emb = np.random.randn(vocab_size, word_vec_size) * (2. / np.sqrt(vocab_size + word_vec_size))
 
-        Wh = np.random.randn(hidden_size, hidden_size) * (2. / np.sqrt(hidden_size + hidden_size))
-        Wx = np.random.randn(word_vec_size, hidden_size) * (2. / np.sqrt(word_vec_size + hidden_size))
-        b_rnn = np.zeros(hidden_size)
+        H = hidden_size * 4 if rnn == 'lstm' else hidden_size
+        Wh = np.random.randn(hidden_size, H) * (2. / np.sqrt(hidden_size + H))
+        Wx = np.random.randn(word_vec_size, H) * (2. / np.sqrt(word_vec_size + H))
+        b_rnn = np.zeros(H)
 
         W_lin = np.random.randn(hidden_size, vocab_size) * (2. / np.sqrt(hidden_size + vocab_size))
         b_lin = np.zeros(vocab_size)
@@ -21,17 +22,20 @@ class RNNLM :
         self.batch_size = None
 
         self.emb = [Embedding(W_emb) for _ in range(length)]
-        self.rnn = RNN(Wh, Wx, b_rnn)
+        if rnn == 'lstm' :
+            self.rnn = LSTM(Wh, Wx, b_rnn)
+        elif rnn == 'rnn' :
+            self.rnn = RNN(Wh, Wx, b_rnn)
         self.lin = [Linear(W_lin, b_lin) for _ in range(length)]
         self.loss = [Softmax(vocab_size) for _ in range(length)]
 
         self.layers = self.emb + [self.rnn] + self.lin + self.loss
 
         self.params, self.grads = [], []
-        for layer in self.layers :
-            self.params += layer.params
-            self.grads += layer.grads
-
+        self.params = [W_emb,
+                       Wh, Wx, b_rnn,
+                       W_lin, b_lin]
+        self.grads = [np.zeros_like(p) for p in self.params]
         self.rnn_layers = [self.rnn]
 
     def forward(self, xs, ys, is_train=True) :
@@ -54,25 +58,28 @@ class RNNLM :
         return loss
 
     def backward(self, dout=1.) :
+        grads = [0., 0., 0., 0., 0., 0.]
+
         dzs = np.zeros((self.batch_size, self.length, self.vocab_size), dtype='f')
         for t, layer in enumerate(self.loss) :
             dzs[:, t, :] = layer.backward(dout)
 
         dhs = np.zeros((self.batch_size, self.length, self.hidden_size), dtype='f')
-        idx = 0
         for t, layer in enumerate(self.lin) :
             dhs[:, t, :] = layer.backward(dzs[:, t, :])
             for i in range(2) :
-                self.grads[8 + t + i + idx][...] = layer.grads[i][...]
-            idx += 1
+                grads[4 + i] += layer.grads[i]
 
         dembs = self.rnn.backward(dhs)
         for i in range(3) :
-            self.grads[5 + i][...] = self.rnn.grads[i][...]
+            grads[1 + i] = self.rnn.grads[i]
 
         dxs = np.zeros((self.batch_size, self.length))
         for t, layer in enumerate(self.emb) :
             layer.backward(dembs[:, t, :])
-            self.grads[t][...] = layer.grads[0][...]
+            grads[0] += layer.grads[0]
+
+        for i in range(6) :
+            self.grads[i][...] = grads[i]
 
         return None

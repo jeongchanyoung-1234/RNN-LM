@@ -4,25 +4,26 @@ import cupyx
 from functions import softmax, sigmoid
 
 
-class MatMul:
-    def __init__(self, W):
-      self.params = [W]
-      self.grads = [np.zeros_like(W)]
-      self.cache = None
+class MatMul :
+    def __init__(self, W) :
+        self.params = [W]
+        self.grads = [np.zeros_like(W)]
+        self.cache = None
 
-    def forward(self, x):
-      self.cache = x
-      W, = self.params
-      out = np.matmul(x, W)
-      return out
+    def forward(self, x) :
+        self.cache = x
+        W, = self.params
+        out = np.matmul(x, W)
+        return out
 
-    def backward(self, dout):
-      x = self.cache
-      W, = self.params
-      dW = np.matmul(x.T, dout)
-      dx = np.matmul(dout, W.T)
-      self.grads[0][...] = dW
-      return dx
+    def backward(self, dout) :
+        x = self.cache
+        W, = self.params
+        dW = np.matmul(x.T, dout)
+        dx = np.matmul(dout, W.T)
+        self.grads[0][...] = dW
+        return dx
+
 
 class _RNN :
     def __init__(self, W_h, W_x, b) :
@@ -129,113 +130,49 @@ class Linear :
         self.grads[1][...] = db
         return dx
 
+# class Embedding:
+#     def __init__(self, W):
+#         self.params = [W]
+#         self.grads = [np.zeros_like(W)]
+#         self.idx = None
+#
+#     def forward(self, idx, is_train=True):
+#         W, = self.params
+#         self.idx = idx
+#         out = W[idx]
+#         return out
+#
+#     def backward(self, dout):
+#         dW, = self.grads
+#         dW[...] = 0.
+#         cupyx.scatter_add(dW, self.idx, dout)
+#         return None
 
-class RNNEmbedding :
-    def __init__(self, W) :
+class Embedding:
+    def __init__(self, W):
         self.params = [W]
         self.grads = [np.zeros_like(W)]
         self.idx = None
 
-    def forward(self, idx, is_train=True) :
+    def forward(self, idx, is_train=True):
+        self.shape = idx.shape
+        self.dim = idx.ndim
+        if self.dim == 2:
+          idx = idx.flatten()
         W, = self.params
         self.idx = idx
         out = W[idx]
+        if self.dim == 2:
+          out = out.reshape(self.shape[0], self.shape[1], -1)
+          # |out| = (bs, t, hs)
         return out
 
-    def backward(self, dout) :
-        dW, = self.grads
-        dW[...] = 0.
-        cupyx.scatter_add(dW, self.idx, dout)
-        return None
-
-
-class RNNSoftmax :
-    def __init__(self, vocab_size) :
-        self.params, self.grads = [], []
-
-        self.vocab_size = vocab_size
-        self.shape = None
-        self.cache = None
-        self.dim = None
-
-    def forward(self, scores, ys, is_train=True) :
-        # |scores| = (bs, t, vs)
-        # |ys| = (bs, t)
-        self.shape = scores.shape
-        self.dim = scores.ndim
-        if self.dim == 3 :
-            scores = scores.reshape(-1, self.shape[2])
-            ys = ys.flatten()
-        zs = softmax(scores)
-        # |zs| = (bs * t, vs)
-        # |ys| = (bs * y)
-        loss = -np.sum(np.log(zs[np.arange(len(ys)), ys])) / (len(ys))
-
-        self.cache = zs, ys
-        return loss
-
-    def backward(self, dout=1.) :
-        zs, ys = self.cache
-        zs[np.arange(len(zs)), ys] -= 1
-        C = (self.shape[0] * self.shape[1]) if self.dim == 3 else self.shape[0]
-        zs = (zs * dout) / C
-        if self.dim == 3 :
-            dscores = zs.reshape(self.shape)
-        else :
-            dscores = zs
-        return dscores
-
-
-class _Embedding :
-    def __init__(self, W) :
-        self.params = [W]
-        self.grads = [np.zeros_like(W)]
-        self.idx = None
-
-    def forward(self, idx) :
-        W, = self.params
-        self.idx = idx
-        out = W[idx]
-        return out
-
-    def backward(self, dout) :
+    def backward(self, dout):
+        if self.dim == 2:
+          dout = dout.reshape(self.shape[0] * self.shape[1], -1)
         dW, = self.grads
         dW[...] = 0
         cupyx.scatter_add(dW, self.idx, dout)
-        return None
-
-
-class Embedding :
-    def __init__(self, W) :
-        self.params = [W]
-        self.grads = [np.zeros_like(W)]
-        self.layers = None
-        self.W = W
-
-    def forward(self, xs, is_train=True) :
-        N, T = xs.shape
-        V, D = self.W.shape
-
-        out = np.empty((N, T, D), dtype='f')
-        self.layers = []
-
-        for t in range(T) :
-            layer = _Embedding(self.W)
-            out[:, t, :] = layer.forward(xs[:, t])
-            self.layers.append(layer)
-
-        return out
-
-    def backward(self, dout) :
-        N, T, D = dout.shape
-
-        grad = 0
-        for t in range(T) :
-            layer = self.layers[t]
-            layer.backward(dout[:, t, :])
-            grad += layer.grads[0]
-
-        self.grads[0][...] = grad
         return None
 
 
@@ -315,7 +252,8 @@ class LSTM :
         self.layers = None
 
         self.var_dropout_p = var_dropout_p
-        self.mask = None
+        self.mask0 = None
+        self.mask1 = None
 
     def forward(self, xs, is_train=True) :
         # |xs| = (bs, t, is)
@@ -332,13 +270,15 @@ class LSTM :
 
         if self.var_dropout_p > 0 and is_train :
             mask = np.random.uniform(size=self.h_t.shape) > self.var_dropout_p
-            self.mask = mask.astype('f')
+            self.mask0 = mask.astype('f') * (1. / (1. - self.var_dropout_p))
+            mask = np.random.uniform(size=self.h_t.shape) > self.var_dropout_p
+            self.mask1 = mask.astype('f') * (1. / (1. - self.var_dropout_p))
 
         for t in range(self.length) :
             layer = _LSTM(*self.params)
-            if self.mask is not None and is_train :
-                self.h_t *= self.mask
-                self.c_t *= self.mask
+            if self.mask0 is not None and is_train :
+                self.h_t *= self.mask0
+                self.c_t *= self.mask1
 
             self.h_t, self.c_t = layer.forward(xs[:, t, :], self.h_t, self.c_t)
             hs[:, t, :] = self.h_t
@@ -354,9 +294,9 @@ class LSTM :
         grads = [0, 0, 0]
         for t in reversed(range(self.length)) :
             layer = self.layers[t]
-            if self.mask is not None :
-                dh_t *= self.mask
-                dc_t *= self.mask
+            if self.mask0 is not None :
+                dh_t *= self.mask0
+                dc_t *= self.mask1
             dx_t, dh_t, dc_t = layer.backward(dhs[:, t, :] + dh_t, dc_t)
             dxs[:, t, :] = dx_t
             for i, grad in enumerate(layer.grads) :
@@ -364,7 +304,8 @@ class LSTM :
 
         for i, grad in enumerate(grads) :
             self.grads[i][...] = grad
-        self.mask = None
+        self.mask0 = None
+        self.mask1 = None
         return dxs
 
     def reset_state(self) :
@@ -390,41 +331,40 @@ class BiLSTM :
         self.back.reset_state()
 
 
-class Affine:
-  def __init__(self, W, b):
-    self.params = [W, b]
-    self.grads = [np.zeros_like(W), np.zeros_like(b)]
-    self.shape = None
-    self.cache = None
+class Affine :
+    def __init__(self, W, b) :
+        self.params = [W, b]
+        self.grads = [np.zeros_like(W), np.zeros_like(b)]
+        self.shape = None
+        self.cache = None
 
-  def forward(self, xs, is_train=True):
-    self.shape = xs.shape
-    W, b = self.params
-    self.cache = xs
+    def forward(self, xs, is_train=True) :
+        self.shape = xs.shape
+        W, b = self.params
+        self.cache = xs
 
-    xs = xs.reshape(-1, xs.shape[2])
-    # |x| = (bs * l, emb)
-    out = np.dot(xs, W) + b
-    out = out.reshape(self.shape[0], self.shape[1], -1)
-    # |out| = (bs, l, vs)
-    return out
+        xs = xs.reshape(-1, xs.shape[2])
+        # |x| = (bs * l, emb)
+        out = np.dot(xs, W) + b
+        out = out.reshape(self.shape[0], self.shape[1], -1)
+        # |out| = (bs, l, vs)
+        return out
 
-  def backward(self, dout):
-    W, b = self.params
-    xs = self.cache
-    xs = xs.reshape(-1, self.shape[2])
+    def backward(self, dout) :
+        W, b = self.params
+        xs = self.cache
+        xs = xs.reshape(-1, self.shape[2])
 
-    dout = dout.reshape(-1, dout.shape[2])
-    db = dout.sum(axis=0)
+        dout = dout.reshape(-1, dout.shape[2])
+        db = dout.sum(axis=0)
 
-    dxs = np.dot(dout, W.T)
-    dW = np.dot(xs.T, dout)
+        dxs = np.dot(dout, W.T)
+        dW = np.dot(xs.T, dout)
 
-    self.grads[0][...] = dW
-    self.grads[1][...] = db
-    dxs = dxs.reshape(*self.shape)
-    return dxs
-
+        self.grads[0][...] = dW
+        self.grads[1][...] = db
+        dxs = dxs.reshape(*self.shape)
+        return dxs
 
 class Softmax:
   def __init__(self, vocab_size):
@@ -433,15 +373,18 @@ class Softmax:
     self.vocab_size = vocab_size
     self.shape = None
     self.cache = None
+    self.dim = None
 
-  def forward(self, scores, ys):
+  def forward(self, scores, ys, is_train=True):
     # |scores| = (bs, t, vs)
     # |ys| = (bs, t)
     self.shape = scores.shape
-    scores = scores.reshape(-1, self.shape[2])
+    self.dim = scores.ndim
+    if self.dim == 3:
+      scores = scores.reshape(-1, self.shape[2])
+      ys = ys.flatten()
     zs = softmax(scores)
     # |zs| = (bs * t, vs)
-    ys = ys.flatten()
     # |ys| = (bs * y)
     loss = -np.sum(np.log(zs[np.arange(len(ys)), ys])) / (len(ys))
 
@@ -451,25 +394,52 @@ class Softmax:
   def backward(self, dout=1.):
     zs, ys = self.cache
     zs[np.arange(len(zs)), ys] -= 1
-    zs = (zs * dout) / (self.shape[0] * self.shape[1])
-    dscores = zs.reshape(self.shape)
+    C = (self.shape[0] * self.shape[1]) if self.dim == 3 else self.shape[0]
+    zs = (zs * dout) / C
+    if self.dim == 3:
+      dscores = zs.reshape(self.shape)
+    else:
+      dscores = zs
     return dscores
 
 class Dropout:
-  def __init__(self, dropout_p):
+  def __init__(self, dropout_p, recur=False):
     self.params, self.grads = [], []
     self.dropout_p = dropout_p
     self.mask = None
+    self.recur = recur
 
   def forward(self, x, is_train=True):
     # |x| = (bs, t, hs)
     # masking되면 0, masking 안된 노드는 신호를 조금 더 강하게
-    if is_train:
-      mask = np.random.uniform(size=x.shape) > self.dropout_p
-      self.mask = mask.astype('f') * (1. / (1. - self.dropout_p))
+    if is_train and self.dropout_p > 0:
+      if self.recur:
+        mask = np.random.uniform(size=(x.shape[0], x.shape[-1])) > self.dropout_p
+        self.mask = np.expand_dims(mask.astype('f'), axis=1) * (1. / (1. - self.dropout_p))
+      else:
+        mask = np.random.uniform(size=x.shape) > self.dropout_p
+        self.mask = mask.astype('f') * (1. / (1. - self.dropout_p))
       x *= self.mask
     return x
 
   def backward(self, dout):
     dout *= self.mask
+    self.mask = None
+    return dout
+
+
+class EmbeddingDropout:
+  def __init__(self, dropout_p):
+    self.params, self.grads = [], []
+    self.dropout_p = dropout_p
+
+  def forward(self, x, is_train=True):
+    # |x| = (bs, t)
+    if is_train and self.dropout_p > 0:
+      choice = np.random.choice(np.arange(10000), size=int(10000 * self.dropout_p), replace=False)
+      mask = np.isin(x, choice)
+      x[mask] = 10000
+    return x
+
+  def backward(self, dout):
     return dout

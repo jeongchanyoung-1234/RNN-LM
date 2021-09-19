@@ -103,7 +103,7 @@ class Trainer :
     def save_model(self, save_fn) :
         params = {}
         params['params'] = self.model.params
-        with open('./drive/MyDrive/deeplearning/' + save_fn, 'wb') as f :
+        with open(save_fn, 'wb') as f :
             pickle.dump(params, f)
 
     def train(self, xs, ys, valid_data=None) :
@@ -115,8 +115,6 @@ class Trainer :
         loss_count = 0.
 
         iters = (len(xs) // (batch_size * trunc_size))
-        # if valid_data is not None:
-        #   valid_iters = (len(valid_data[1]) // (self.config.valid_batch_size * trunc_size))
 
         start = time.time()
         if self.config.early_stopping > 0 :
@@ -124,6 +122,8 @@ class Trainer :
             print(
                 f'|Message| Training will be automatically stopped if no improvement during {self.config.early_stopping} epochs')
         for epoch in range(1, self.config.epochs + 1) :
+            if self.config.lr_decay_factor > 0 and self.config.lr_decay_epoch <= epoch :
+                optimizer.lr /= self.config.lr_decay_factor
             self.time_idx = 0
             self.valid_time_idx = 0
 
@@ -164,16 +164,18 @@ class Trainer :
                 self.best_ppl = ppl
                 self.best_epoch = epoch
                 patience = self.config.early_stopping
+                if self.config.save_fn is not None :
+                    self.save_model(self.config.save_fn)
             else :
-                if self.config.weight_decay > 0 :
+                if self.config.lr_decay > 0 :
                     if self.config.warmup_epoch <= 0 or self.config.warmup_epoch > 0 and epoch > self.config.warmup_epoch :
-                        optimizer.lr *= self.config.weight_decay
+                        optimizer.lr *= self.config.lr_decay
                         print(f'Learning rate decayed - Current {optimizer.lr}')
-                    if self.config.early_stopping > 0 :
-                        patience -= 1
-                        if patience == 0 :
-                            print(f'Training stopped early at {epoch} epochs')
-                            break
+                if self.config.early_stopping > 0 :
+                    patience -= 1
+                    if patience == 0 :
+                        print(f'Training stopped early at {epoch} epochs')
+                        break
 
             end = time.time()
             if epoch % self.config.verbose == 0 :
